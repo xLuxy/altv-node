@@ -490,7 +490,6 @@
       [ 'OS in "linux freebsd openbsd solaris android aix os400 cloudabi"', {
         'cflags': [ '-Wall', '-Wextra', '-Wno-unused-parameter', ],
         'cflags_cc': [
-          '-fno-rtti',
           '-fno-exceptions',
           '-fno-strict-aliasing',
           '-std=gnu++17',
