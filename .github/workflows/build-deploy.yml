@@ -1,0 +1,220 @@
+name: Build & deploy
+on:
+  push:
+    tags:
+      - 'dev/*'
+      - 'rc/*'
+      - 'release/*'
+
+jobs:
+  build-windows-release:
+    name: Build windows release
+    runs-on: windows-2019
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          lfs: true
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install deps
+        run: choco install nasm
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd alt-build && call alt-release.bat
+          cd ..
+          mkdir dist
+          copy out\Release\libnode.lib dist
+          copy out\Release\libnode.dll dist
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: node-windows-release
+          path: ./dist/
+
+  build-windows-debug:
+    name: Build windows debug
+    runs-on: windows-2019
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          lfs: true
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install deps
+        run: choco install nasm
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd alt-build && call alt-debug.bat
+          cd ..
+          mkdir dist
+          copy out\Debug\libnode.lib dist
+          copy out\Debug\libnode.dll dist
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: node-windows-debug
+          path: ./dist/
+
+  build-linux-release:
+    name: Build linux release
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          lfs: true
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Build
+        run: |
+          cd alt-build && bash alt-release.sh
+          cd ..
+          mkdir dist
+          cp ./out/Release/libnode.so dist/libnode.so
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: node-linux-release
+          path: ./dist/
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-20.04
+    needs:
+      - build-windows-release
+      - build-windows-debug
+      - build-linux-release
+    steps:
+      - name: Download windows release artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: node-windows-release
+          path: dist-windows-release
+
+      - name: Download windows debug artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: node-windows-debug
+          path: dist-windows-debug
+
+      - name: Download linux release artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: node-linux-release
+          path: dist-linux-release
+
+      - name: Zip artifacts
+        run: |
+          zip -r -j node-windows-release dist-windows-release
+          zip -r -j node-windows-debug dist-windows-debug
+          zip -r -j node-linux-release dist-linux-release
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+
+      - name: Upload windows release artifacts
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./node-windows-release.zip
+          asset_name: node-windows-release.zip
+          asset_content_type: application/zip
+
+      - name: Upload windows debug artifacts
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./node-windows-debug.zip
+          asset_name: node-windows-debug.zip
+          asset_content_type: application/zip
+
+      - name: Upload linux release artifacts
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./node-linux-release.zip
+          asset_name: node-linux-release.zip
+          asset_content_type: application/zip
+
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          TAG=${GITHUB_REF/refs\/tags\//}
+          echo ::set-output name=BRANCH::${TAG/\/*}
+          echo ::set-output name=VERSION::${TAG/*\/}
+
+      - name: Install CDN upload tool
+        if: false
+        run: npm i @altmp/upload-tool@latest
+
+      - name: Upload windows release files to CDN
+        if: false
+        run: npx alt-upload dist-windows-release deps/nodejs/v2/$BRANCH/x64_win32/Release $VERSION
+        env:
+          CI_UPLOAD_URL: ${{ secrets.CI_UPLOAD_URL }}
+          CI_DEPLOY_TOKEN: ${{ secrets.CI_DEPLOY_TOKEN }}
+          BRANCH: ${{ steps.version.outputs.BRANCH }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+
+      - name: Upload windows debug files to CDN
+        if: false
+        run: npx alt-upload dist-windows-debug deps/nodejs/v2/$BRANCH/x64_win32/Debug $VERSION
+        env:
+          CI_UPLOAD_URL: ${{ secrets.CI_UPLOAD_URL }}
+          CI_DEPLOY_TOKEN: ${{ secrets.CI_DEPLOY_TOKEN }}
+          BRANCH: ${{ steps.version.outputs.BRANCH }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+
+      - name: Upload linux files to CDN
+        if: false
+        run: npx alt-upload dist-linux-release deps/nodejs/v2/$BRANCH/x64_linux $VERSION
+        env:
+          CI_UPLOAD_URL: ${{ secrets.CI_UPLOAD_URL }}
+          CI_DEPLOY_TOKEN: ${{ secrets.CI_DEPLOY_TOKEN }}
+          BRANCH: ${{ steps.version.outputs.BRANCH }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+
+  delete-artifacts:
+    name: Delete artifacts
+    runs-on: ubuntu-20.04
+    needs: [deploy]
+    if: ${{ always() }}
+    steps:
+      - name: Delete artifacts
+        uses: geekyeggo/delete-artifact@v2
+        with:
+          name: |
+            node-windows-release
+            node-windows-debug
+            node-linux-release
